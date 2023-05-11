@@ -1,0 +1,22 @@
+#[derive(Debug)]
+enum ArmMnemonic {
+    Add,
+    Sub,
+    Ldr,
+    Str,
+    Mov,
+    Cmp,
+    B,
+    Bl,
+    Bx,
+    Blx,
+}
+
+fn main() {
+    let mnemonic1 = ArmMnemonic::Add;
+    let mnemonic2 = ArmMnemonic::Ldr;
+    let mnemonic3 = ArmMnemonic::Bx;
+    println!("{:?}", mnemonic1);
+    println!("{:?}", mnemonic2);
+    println!("{:?}", mnemonic3);
+}
