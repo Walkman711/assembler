@@ -7,3 +7,6 @@ edition = "2021"
 
 [dependencies]
 clap = { version="4.2.7", features=["derive"] }
+strum = "0.24.1"
+strum_macros = "0.24.3"
+thiserror = "1.0.40"

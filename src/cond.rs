@@ -1,4 +1,4 @@
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, strum_macros::EnumIter, strum_macros::EnumString)]
 pub enum Cond {
     EQ,
     NE,

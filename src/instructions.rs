@@ -2,7 +2,8 @@
 
 use crate::{
     cond::Cond,
-    mnemonics::{DataMnemonic, MemoryMnemonic},
+    error::{MyErr, ParseError},
+    mnemonics::{DataMnemonic, MemoryMnemonic, Mnemonic},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -21,9 +22,51 @@ pub enum Operand {
     Immediate(u64),
 }
 
-// TODO: u4
 #[derive(Clone, Copy, Debug)]
-pub struct Register(u8);
+pub enum Register {
+    W(u8),
+    X(u8),
+}
+
+impl Register {
+    pub fn get_id(&self) -> u8 {
+        match self {
+            Register::W(n) => *n,
+            Register::X(n) => *n,
+        }
+    }
+}
+
+impl TryFrom<&str> for Register {
+    type Error = MyErr;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        if value.is_empty() {
+            panic!("empty string");
+        }
+
+        if value == "sp" {
+            return Ok(Register::X(29));
+        } else if value == "pc" {
+            return Ok(Register::X(31));
+        }
+
+        let access_type = &value[0..1];
+        let Ok(register_id) = &value[1..].parse::<u8>() else {
+            return Err(ParseError::BadRegister(value.to_owned()).into());
+        };
+
+        if *register_id > 31 {
+            panic!("bad reg id {register_id}");
+        }
+
+        match access_type {
+            "x" | "X" => Ok(Self::X(*register_id)),
+            "w" | "W" => Ok(Self::W(*register_id)),
+            _ => panic!("bad register access_type {access_type:?}"),
+        }
+    }
+}
 
 // TODO: u4
 #[derive(Clone, Copy, Debug)]
@@ -82,8 +125,44 @@ pub enum Instruction {
 
 impl From<&str> for Instruction {
     fn from(value: &str) -> Self {
+        dbg!(value);
         let (opcode_cond, rest) = value.trim().split_once(' ').unwrap();
-        todo!()
+
+        dbg!(opcode_cond, rest);
+        let mnemonic = DataMnemonic::try_from(opcode_cond).unwrap();
+        dbg!(mnemonic);
+        let cond_maybe = opcode_cond.replace(&mnemonic.to_string(), "");
+        let cond = if cond_maybe.is_empty() {
+            Cond::AL
+        } else {
+            Cond::try_from(cond_maybe.as_str()).unwrap()
+        };
+        dbg!(cond);
+
+        let mut operands = rest.split(",");
+        // dbg!(&operands);
+        // assert!(operands.len() >= 2);
+        // let digit_re = regex::Regex::new(r"\d+").unwrap();
+        // let reg1 = digit_re.find(operands.next().unwrap()).map(|x| x.as_str());
+        // let reg2 = digit_re.find(operands.next().unwrap()).map(|x| x.as_str());
+        let reg1 = Register::try_from(operands.next().unwrap().trim()).unwrap();
+        dbg!(reg1);
+        let reg2 = Register::try_from(operands.next().unwrap().trim()).unwrap();
+        dbg!(reg2);
+        // TODO: proper flex op vs 3rd reg handling
+        let last = operands.next().unwrap_or("0").trim();
+        dbg!(last);
+        let flexible_op: u8 = last.parse().unwrap();
+        dbg!(flexible_op);
+
+        Self::DataProcessing(
+            cond,
+            mnemonic,
+            SetConditionCodes::SetCodes,
+            reg1,
+            reg2,
+            FlexibleOperand::ImmediateWithRotation(flexible_op, Rotation(0)),
+        )
     }
 }
 
@@ -111,15 +190,15 @@ impl Instruction {
                 };
                 encoding |= s_mask;
 
-                let rn_mask: u32 = (rn.0 as u32) << 16;
+                let rn_mask: u32 = (rn.get_id() as u32) << 16;
                 encoding |= rn_mask;
 
-                let rd_mask: u32 = (rd.0 as u32) << 12;
+                let rd_mask: u32 = (rd.get_id() as u32) << 12;
                 encoding |= rd_mask;
 
                 let op2_mask: u32 = match op2 {
                     FlexibleOperand::RegisterWithShift(reg, shift) => {
-                        ((shift.0 as u32) << 4) | (reg.0 as u32)
+                        ((shift.0 as u32) << 4) | (reg.get_id() as u32)
                     }
                     FlexibleOperand::ImmediateWithRotation(imm, rotation) => {
                         ((rotation.0 as u32) << 8) | (imm as u32)
@@ -179,15 +258,15 @@ impl Instruction {
                 };
                 encoding |= l_mask;
 
-                let rn_mask: u32 = (rn.0 as u32) << 16;
+                let rn_mask: u32 = (rn.get_id() as u32) << 16;
                 encoding |= rn_mask;
 
-                let rd_mask: u32 = (rd.0 as u32) << 12;
+                let rd_mask: u32 = (rd.get_id() as u32) << 12;
                 encoding |= rd_mask;
 
                 let offset_mask: u32 = match offset {
                     Offset::RegisterWithShift(reg, shift, _) => {
-                        ((shift.0 as u32) << 4) | (reg.0 as u32)
+                        ((shift.0 as u32) << 4) | (reg.get_id() as u32)
                     }
                     // Truncate immediate value to 12 bits since rust doesn't want you to have
                     // bizarre numeric types like u12 floating around.

@@ -1,3 +1,4 @@
-pub mod cond;
+mod cond;
+mod error;
 pub mod instructions;
-pub mod mnemonics;
+mod mnemonics;
