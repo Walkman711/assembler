@@ -9,6 +9,32 @@ pub enum Mnemonic {
     Mul(MultiplyMnemonic),
 }
 
+impl TryFrom<&str> for Mnemonic {
+    type Error = MyErr;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        if let Ok(data_mnemonic) = DataMnemonic::try_from(value) {
+            Ok(Mnemonic::Data(data_mnemonic))
+        } else if let Ok(mem_mnemonic) = MemoryMnemonic::try_from(value) {
+            Ok(Mnemonic::Mem(mem_mnemonic))
+        } else if let Ok(mul_mnemonic) = MultiplyMnemonic::try_from(value) {
+            Ok(Mnemonic::Mul(mul_mnemonic))
+        } else {
+            Err(ParseError::BadMnemonic(value.to_owned()).into())
+        }
+    }
+}
+
+impl std::fmt::Display for Mnemonic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Mnemonic::Data(data) => write!(f, "{data}"),
+            Mnemonic::Mem(mem) => write!(f, "{mem}"),
+            Mnemonic::Mul(mul) => write!(f, "{mul}"),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, strum_macros::EnumIter)]
 pub enum DataMnemonic {
     AND,

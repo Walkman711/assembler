@@ -25,16 +25,44 @@ pub enum Operand {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Register {
     R(u8),
-    W(u8),
-    X(u8),
+    D(u8),
+    S(u8),
+    N(u8),
 }
 
 impl Register {
     pub fn get_id(&self) -> u8 {
         match self {
             Register::R(n) => *n,
-            Register::W(n) => *n,
-            Register::X(n) => *n,
+            Register::D(n) => *n,
+            Register::S(n) => *n,
+            Register::N(n) => *n,
+        }
+    }
+
+    pub fn new_dest_reg(value: &str) -> Result<Self, MyErr> {
+        Ok(Register::D(Self::parse_reg_id(value)?))
+    }
+
+    pub fn new_src_reg(value: &str) -> Result<Self, MyErr> {
+        Ok(Register::S(Self::parse_reg_id(value)?))
+    }
+
+    fn parse_reg_id(value: &str) -> Result<u8, MyErr> {
+        if value.is_empty() {
+            panic!("empty string");
+        }
+
+        if value == "sp" {
+            return Ok(13);
+        } else if value == "pc" {
+            return Ok(15);
+        }
+
+        if let Ok(register_id) = &value[1..].parse::<u8>() {
+            Ok(*register_id)
+        } else {
+            Err(ParseError::BadRegister(value.to_owned()).into())
         }
     }
 }
@@ -64,8 +92,8 @@ impl TryFrom<&str> for Register {
 
         match access_type {
             "r" | "R" => Ok(Self::R(*register_id)),
-            "x" | "X" => Ok(Self::X(*register_id)),
-            "w" | "W" => Ok(Self::W(*register_id)),
+            //     "x" | "X" => Ok(Self::X(*register_id)),
+            //     "w" | "W" => Ok(Self::W(*register_id)),
             _ => Err(ParseError::BadRegister(value.to_owned()).into()),
         }
     }
@@ -139,90 +167,93 @@ pub enum Instruction {
     ),
     Mem(Cond, MemoryMnemonic, IndexMode, Register, Register, Offset),
     Branch(Cond, Operand, u64),
-    Mul(Cond, MultiplyMnemonic, Register, Register, Register),
+    Mul(
+        Cond,
+        MultiplyMnemonic,
+        SetConditionCodes,
+        Register,
+        Register,
+        Register,
+    ),
 }
 
-impl From<&str> for Instruction {
-    fn from(value: &str) -> Self {
+impl TryFrom<&str> for Instruction {
+    type Error = MyErr;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
         let (opcode_cond, rest) = value.trim().split_once(' ').unwrap();
-
-        if let Ok(mnemonic) = DataMnemonic::try_from(opcode_cond) {
-            let cond_maybe = opcode_cond.replace(&mnemonic.to_string(), "");
-            let cond = if cond_maybe.is_empty() {
-                Cond::AL
-            } else {
-                Cond::try_from(cond_maybe.as_str()).unwrap()
-            };
-
-            let mut operands = rest.split(",");
-
-            // There will always be a destination register
-            let rd = Register::try_from(operands.next().unwrap().trim()).unwrap();
-
-            let (rn, flex_op) = if mnemonic == DataMnemonic::MOV {
-                (
-                    Register::R(0),
-                    FlexibleOperand::try_from(operands.next().unwrap().trim()).unwrap(),
-                )
-            } else {
-                (
-                    Register::try_from(operands.next().unwrap().trim()).unwrap(),
-                    FlexibleOperand::try_from(operands.next().unwrap().trim()).unwrap(),
-                )
-            };
-
-            Self::DataProcessing(
-                cond,
-                mnemonic,
-                SetConditionCodes::DontSetCodes,
-                rn,
-                rd,
-                flex_op,
-            )
-        } else if let Ok(mnemonic) = MemoryMnemonic::try_from(opcode_cond) {
-            let cond_maybe = opcode_cond.replace(&mnemonic.to_string(), "");
-            let cond = if cond_maybe.is_empty() {
-                Cond::AL
-            } else {
-                Cond::try_from(cond_maybe.as_str()).unwrap()
-            };
-            let mut operands = rest.split(",");
-
-            // There will always be a destination register
-            let rd = Register::try_from(operands.next().unwrap().trim()).unwrap();
-            // TODO: can this be anything but the stack pointer?
-            let rn = Register::R(13);
-
-            let mut offset = 0;
-            while let Some(maybe_offset) = operands.next() {
-                // Should do something more robust, but this will do for handling brackets for now.
-                // Should use something like the compiler lexer where i expand out special syms
-                if let Ok(parsed_offset) = maybe_offset.replace(']', "").trim().parse::<u16>() {
-                    offset = parsed_offset;
-                }
-            }
-
-            Self::Mem(
-                cond,
-                mnemonic,
-                IndexMode::Offset,
-                rn,
-                rd,
-                Offset::Immediate(offset, UpDown::Up),
-            )
+        let mut operands = rest.split(",");
+        let mnemonic = Mnemonic::try_from(opcode_cond)?;
+        let cond_maybe = opcode_cond.replace(&mnemonic.to_string(), "");
+        let cond = if cond_maybe.is_empty() {
+            Cond::AL
         } else {
-            let mnemonic = MultiplyMnemonic::try_from(opcode_cond).unwrap();
-            let cond_maybe = opcode_cond.replace(&mnemonic.to_string(), "");
-            let cond = if cond_maybe.is_empty() {
-                Cond::AL
-            } else {
-                Cond::try_from(cond_maybe.as_str()).unwrap()
-            };
-            let mut operands = rest.split(",");
-            let rd = Register::try_from(operands.next().unwrap().trim()).unwrap();
-            let rn = Register::try_from(operands.next().unwrap().trim()).unwrap();
-            let rs = Register::try_from(operands.next().unwrap().trim()).unwrap();
-            Self::Mul(cond, mnemonic, rn, rd, rs)
+            Cond::try_from(cond_maybe.as_str()).unwrap()
+        };
+
+        match mnemonic {
+            Mnemonic::Data(data_mnemonic) => {
+                // There will always be a destination register
+                let rd = Register::try_from(operands.next().unwrap().trim()).unwrap();
+
+                let (rn, flex_op) = if data_mnemonic == DataMnemonic::MOV {
+                    (
+                        Register::R(0),
+                        FlexibleOperand::try_from(operands.next().unwrap().trim()).unwrap(),
+                    )
+                } else {
+                    (
+                        Register::try_from(operands.next().unwrap().trim()).unwrap(),
+                        FlexibleOperand::try_from(operands.next().unwrap().trim()).unwrap(),
+                    )
+                };
+
+                Ok(Self::DataProcessing(
+                    cond,
+                    data_mnemonic,
+                    SetConditionCodes::DontSetCodes,
+                    rn,
+                    rd,
+                    flex_op,
+                ))
+            }
+            Mnemonic::Mem(mem_mnemonic) => {
+                // There will always be a destination register
+                let rd = Register::try_from(operands.next().unwrap().trim()).unwrap();
+                // TODO: can this be anything but the stack pointer?
+                let rn = Register::R(13);
+
+                let mut offset = 0;
+                while let Some(maybe_offset) = operands.next() {
+                    // Should do something more robust, but this will do for handling brackets for now.
+                    // Should use something like the compiler lexer where i expand out special syms
+                    if let Ok(parsed_offset) = maybe_offset.replace(']', "").trim().parse::<u16>() {
+                        offset = parsed_offset;
+                    }
+                }
+
+                Ok(Self::Mem(
+                    cond,
+                    mem_mnemonic,
+                    IndexMode::Offset,
+                    rn,
+                    rd,
+                    Offset::Immediate(offset, UpDown::Up),
+                ))
+            }
+            Mnemonic::Mul(mul_mnemonic) => {
+                let rd = Register::try_from(operands.next().unwrap().trim()).unwrap();
+                let rn = Register::try_from(operands.next().unwrap().trim()).unwrap();
+                let rs = Register::try_from(operands.next().unwrap().trim()).unwrap();
+                Ok(Self::Mul(
+                    cond,
+                    mul_mnemonic,
+                    SetConditionCodes::DontSetCodes,
+                    rn,
+                    rd,
+                    rs,
+                ))
+            }
         }
     }
 }
@@ -337,7 +368,34 @@ impl Instruction {
 
                 encoding.swap_bytes()
             }
-            Instruction::Mul(..) => todo!(),
+            Instruction::Mul(cond, mul_mnemonic, set_condition_codes, _, _, _) => {
+                let mut encoding: u32 = 0;
+
+                let cond_mask: u32 = (cond as u8 as u32) << 28;
+                encoding |= cond_mask;
+
+                let a_mask = match mul_mnemonic {
+                    MultiplyMnemonic::MUL => 0,
+                };
+                encoding |= a_mask;
+
+                let s_mask = match set_condition_codes {
+                    SetConditionCodes::SetCodes => 1 << 20,
+                    SetConditionCodes::DontSetCodes => 0,
+                };
+                encoding |= s_mask;
+
+                // let rd_mask: u32 = (rd.get_id() as u32) << 16;
+                // encoding |= rd_mask;
+
+                // let rn_mask: u32 = (rn.get_id() as u32) << 12;
+                // encoding |= rn_mask;
+
+                // let rs_mask: u32 = (rs.get_id() as u32) << 8;
+                // encoding |= rs_mask;
+
+                encoding.swap_bytes()
+            }
             Instruction::Branch(..) => todo!(),
         }
     }
@@ -457,4 +515,7 @@ pub mod tests {
             "actual: {encoding:#8X} | expected: {expected:#8X}"
         );
     }
+
+    #[test]
+    fn test_mul() {}
 }
