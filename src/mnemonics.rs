@@ -6,9 +6,10 @@ use crate::error::{MyErr, ParseError};
 pub enum Mnemonic {
     Data(DataMnemonic),
     Mem(MemoryMnemonic),
+    Mul(MultiplyMnemonic),
 }
 
-#[derive(Clone, Copy, Debug, strum_macros::EnumIter)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, strum_macros::EnumIter)]
 pub enum DataMnemonic {
     AND,
     EOR,
@@ -91,7 +92,7 @@ impl From<DataMnemonic> for u8 {
 }
 
 // TODO: L, B bits
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MemoryMnemonic {
     STR,
     STRB,
@@ -137,7 +138,7 @@ impl TryFrom<&str> for MemoryMnemonic {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BranchMnemonic {
     B,
     BL,
@@ -163,6 +164,33 @@ impl TryFrom<&str> for BranchMnemonic {
             Ok(BranchMnemonic::BL)
         } else if value.starts_with(&b.to_uppercase()) || value.starts_with(&b.to_lowercase()) {
             Ok(BranchMnemonic::B)
+        } else {
+            Err(ParseError::BadMnemonic(value.to_owned()).into())
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MultiplyMnemonic {
+    MUL,
+}
+
+impl std::fmt::Display for MultiplyMnemonic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MultiplyMnemonic::MUL => write!(f, "mul"),
+        }
+    }
+}
+
+impl TryFrom<&str> for MultiplyMnemonic {
+    type Error = MyErr;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let mul = MultiplyMnemonic::MUL.to_string();
+
+        if value.starts_with(&mul.to_uppercase()) || value.starts_with(&mul.to_lowercase()) {
+            Ok(MultiplyMnemonic::MUL)
         } else {
             Err(ParseError::BadMnemonic(value.to_owned()).into())
         }

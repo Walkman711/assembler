@@ -25,7 +25,7 @@ fn main() {
 
     for line in BufReader::new(file).lines() {
         let parsed_instruction = Instruction::from(line.unwrap().as_str());
-        // dbg!(&parsed_instruction);
+        dbg!(&parsed_instruction);
         let machine_code: u32 = parsed_instruction.to_machine_code();
         println!("{machine_code:#x}")
     }

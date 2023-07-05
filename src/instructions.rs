@@ -3,10 +3,10 @@
 use crate::{
     cond::Cond,
     error::{MyErr, ParseError},
-    mnemonics::{DataMnemonic, MemoryMnemonic, Mnemonic},
+    mnemonics::{DataMnemonic, MemoryMnemonic, Mnemonic, MultiplyMnemonic},
 };
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DataType {
     SignedWord,
     UnsignedWord,
@@ -16,14 +16,15 @@ pub enum DataType {
     UnsignedByte,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Operand {
     Register,
     Immediate(u64),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Register {
+    R(u8),
     W(u8),
     X(u8),
 }
@@ -31,6 +32,7 @@ pub enum Register {
 impl Register {
     pub fn get_id(&self) -> u8 {
         match self {
+            Register::R(n) => *n,
             Register::W(n) => *n,
             Register::X(n) => *n,
         }
@@ -46,9 +48,9 @@ impl TryFrom<&str> for Register {
         }
 
         if value == "sp" {
-            return Ok(Register::X(29));
+            return Ok(Register::R(13));
         } else if value == "pc" {
-            return Ok(Register::X(31));
+            return Ok(Register::R(15));
         }
 
         let access_type = &value[0..1];
@@ -61,54 +63,70 @@ impl TryFrom<&str> for Register {
         }
 
         match access_type {
+            "r" | "R" => Ok(Self::R(*register_id)),
             "x" | "X" => Ok(Self::X(*register_id)),
             "w" | "W" => Ok(Self::W(*register_id)),
-            _ => panic!("bad register access_type {access_type:?}"),
+            _ => Err(ParseError::BadRegister(value.to_owned()).into()),
         }
     }
 }
 
 // TODO: u4
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Rotation(u8);
 
 // TODO: u4
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Shift(u8);
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FlexibleOperand {
     RegisterWithShift(Register, Shift),
     ImmediateWithRotation(u8, Rotation),
 }
 
-#[derive(Clone, Copy, Debug)]
+impl TryFrom<&str> for FlexibleOperand {
+    type Error = MyErr;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        if let Ok(reg) = Register::try_from(value) {
+            return Ok(FlexibleOperand::RegisterWithShift(reg, Shift(0)));
+        } else {
+            Ok(FlexibleOperand::ImmediateWithRotation(
+                value.parse::<u8>().unwrap(),
+                Rotation(0),
+            ))
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SetConditionCodes {
     SetCodes,
     DontSetCodes,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Offset {
     RegisterWithShift(Register, Shift, UpDown),
     // TODO: u12
     Immediate(u16, UpDown),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UpDown {
     Up,
     Down,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IndexMode {
     PostIndex,
     Offset,
     PreIndex,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Instruction {
     // TODO: src vs dest register?
     DataProcessing(
@@ -121,48 +139,91 @@ pub enum Instruction {
     ),
     Mem(Cond, MemoryMnemonic, IndexMode, Register, Register, Offset),
     Branch(Cond, Operand, u64),
+    Mul(Cond, MultiplyMnemonic, Register, Register, Register),
 }
 
 impl From<&str> for Instruction {
     fn from(value: &str) -> Self {
-        dbg!(value);
         let (opcode_cond, rest) = value.trim().split_once(' ').unwrap();
 
-        dbg!(opcode_cond, rest);
-        let mnemonic = DataMnemonic::try_from(opcode_cond).unwrap();
-        dbg!(mnemonic);
-        let cond_maybe = opcode_cond.replace(&mnemonic.to_string(), "");
-        let cond = if cond_maybe.is_empty() {
-            Cond::AL
+        if let Ok(mnemonic) = DataMnemonic::try_from(opcode_cond) {
+            let cond_maybe = opcode_cond.replace(&mnemonic.to_string(), "");
+            let cond = if cond_maybe.is_empty() {
+                Cond::AL
+            } else {
+                Cond::try_from(cond_maybe.as_str()).unwrap()
+            };
+
+            let mut operands = rest.split(",");
+
+            // There will always be a destination register
+            let rd = Register::try_from(operands.next().unwrap().trim()).unwrap();
+
+            let (rn, flex_op) = if mnemonic == DataMnemonic::MOV {
+                (
+                    Register::R(0),
+                    FlexibleOperand::try_from(operands.next().unwrap().trim()).unwrap(),
+                )
+            } else {
+                (
+                    Register::try_from(operands.next().unwrap().trim()).unwrap(),
+                    FlexibleOperand::try_from(operands.next().unwrap().trim()).unwrap(),
+                )
+            };
+
+            Self::DataProcessing(
+                cond,
+                mnemonic,
+                SetConditionCodes::DontSetCodes,
+                rn,
+                rd,
+                flex_op,
+            )
+        } else if let Ok(mnemonic) = MemoryMnemonic::try_from(opcode_cond) {
+            let cond_maybe = opcode_cond.replace(&mnemonic.to_string(), "");
+            let cond = if cond_maybe.is_empty() {
+                Cond::AL
+            } else {
+                Cond::try_from(cond_maybe.as_str()).unwrap()
+            };
+            let mut operands = rest.split(",");
+
+            // There will always be a destination register
+            let rd = Register::try_from(operands.next().unwrap().trim()).unwrap();
+            // TODO: can this be anything but the stack pointer?
+            let rn = Register::R(13);
+
+            let mut offset = 0;
+            while let Some(maybe_offset) = operands.next() {
+                // Should do something more robust, but this will do for handling brackets for now.
+                // Should use something like the compiler lexer where i expand out special syms
+                if let Ok(parsed_offset) = maybe_offset.replace(']', "").trim().parse::<u16>() {
+                    offset = parsed_offset;
+                }
+            }
+
+            Self::Mem(
+                cond,
+                mnemonic,
+                IndexMode::Offset,
+                rn,
+                rd,
+                Offset::Immediate(offset, UpDown::Up),
+            )
         } else {
-            Cond::try_from(cond_maybe.as_str()).unwrap()
-        };
-        dbg!(cond);
-
-        let mut operands = rest.split(",");
-        // dbg!(&operands);
-        // assert!(operands.len() >= 2);
-        // let digit_re = regex::Regex::new(r"\d+").unwrap();
-        // let reg1 = digit_re.find(operands.next().unwrap()).map(|x| x.as_str());
-        // let reg2 = digit_re.find(operands.next().unwrap()).map(|x| x.as_str());
-        let reg1 = Register::try_from(operands.next().unwrap().trim()).unwrap();
-        dbg!(reg1);
-        let reg2 = Register::try_from(operands.next().unwrap().trim()).unwrap();
-        dbg!(reg2);
-        // TODO: proper flex op vs 3rd reg handling
-        let last = operands.next().unwrap_or("0").trim();
-        dbg!(last);
-        let flexible_op: u8 = last.parse().unwrap();
-        dbg!(flexible_op);
-
-        Self::DataProcessing(
-            cond,
-            mnemonic,
-            SetConditionCodes::SetCodes,
-            reg1,
-            reg2,
-            FlexibleOperand::ImmediateWithRotation(flexible_op, Rotation(0)),
-        )
+            let mnemonic = MultiplyMnemonic::try_from(opcode_cond).unwrap();
+            let cond_maybe = opcode_cond.replace(&mnemonic.to_string(), "");
+            let cond = if cond_maybe.is_empty() {
+                Cond::AL
+            } else {
+                Cond::try_from(cond_maybe.as_str()).unwrap()
+            };
+            let mut operands = rest.split(",");
+            let rd = Register::try_from(operands.next().unwrap().trim()).unwrap();
+            let rn = Register::try_from(operands.next().unwrap().trim()).unwrap();
+            let rs = Register::try_from(operands.next().unwrap().trim()).unwrap();
+            Self::Mul(cond, mnemonic, rn, rd, rs)
+        }
     }
 }
 
@@ -206,7 +267,7 @@ impl Instruction {
                 };
                 encoding |= op2_mask;
 
-                encoding
+                encoding.swap_bytes()
             }
             Instruction::Mem(cond, opcode, index_mode, rn, rd, offset) => {
                 let mut encoding: u32 = 0;
@@ -274,9 +335,10 @@ impl Instruction {
                 };
                 encoding |= offset_mask;
 
-                encoding
+                encoding.swap_bytes()
             }
-            Instruction::Branch(_, _, _) => todo!(),
+            Instruction::Mul(..) => todo!(),
+            Instruction::Branch(..) => todo!(),
         }
     }
 }
@@ -285,43 +347,114 @@ impl Instruction {
 pub mod tests {
     use crate::{
         cond::Cond,
-        instructions::{Offset, UpDown},
+        instructions::{Offset, Rotation, UpDown},
         mnemonics::{DataMnemonic, MemoryMnemonic},
     };
 
     use super::{FlexibleOperand, IndexMode, Instruction, Register, SetConditionCodes, Shift};
 
     #[test]
-    fn test_dpi() {
-        let mov_inst = Instruction::DataProcessing(
+    fn test_add() {
+        let add_inst_str = "add r4, r3, r5";
+        let add_inst_expected = Instruction::DataProcessing(
             Cond::AL,
             DataMnemonic::ADD,
             SetConditionCodes::DontSetCodes,
-            Register(1),
-            Register(0),
-            FlexibleOperand::RegisterWithShift(Register(2), Shift(0)),
+            Register::R(3),
+            Register::R(4),
+            FlexibleOperand::RegisterWithShift(Register::R(5), Shift(0)),
         );
-        // taken from cs107e on github
-        let expected = 0b1110_00_0_0100_0_0001_0000_0000_0000_0010;
-        assert_eq!(mov_inst.to_machine_code(), expected);
+
+        assert_eq!(
+            Instruction::try_from(add_inst_str).unwrap(),
+            add_inst_expected,
+        );
+
+        let expected_be: u32 = 0x05_40_83_E0;
+        let encoding = add_inst_expected.to_machine_code();
+
+        assert_eq!(
+            encoding, expected_be,
+            "\nactual: {encoding:#08x} | expected: {expected_be:#08x}"
+        );
+    }
+
+    #[test]
+    fn test_sub() {
+        let sub_inst_str = "sub r1, r0, r2";
+        let sub_inst_expected = Instruction::DataProcessing(
+            Cond::AL,
+            DataMnemonic::SUB,
+            SetConditionCodes::DontSetCodes,
+            Register::R(0),
+            Register::R(1),
+            FlexibleOperand::RegisterWithShift(Register::R(2), Shift(0)),
+        );
+
+        assert_eq!(
+            Instruction::try_from(sub_inst_str).unwrap(),
+            sub_inst_expected,
+        );
+
+        let expected_be: u32 = 0x02_10_40_E0;
+        let expected_le = expected_be.to_le();
+        let encoding = sub_inst_expected.to_machine_code();
+
+        assert_eq!(
+            encoding, expected_le,
+            "\nactual: {encoding:#08x} | expected: {expected_le:#08x}"
+        );
+    }
+
+    #[test]
+    fn test_mov() {
+        let mov_inst_str = "mov r0, 1";
+        let mov_inst_expected = Instruction::DataProcessing(
+            Cond::AL,
+            DataMnemonic::MOV,
+            SetConditionCodes::DontSetCodes,
+            Register::R(0),
+            Register::R(0),
+            FlexibleOperand::ImmediateWithRotation(1, Rotation(0)),
+        );
+
+        assert_eq!(
+            Instruction::try_from(mov_inst_str).unwrap(),
+            mov_inst_expected,
+        );
+
+        let expected_le = 0x01_00_a0_e3;
+        let encoding = mov_inst_expected.to_machine_code();
+
+        assert_eq!(
+            encoding, expected_le,
+            "\nactual: {encoding:#08x} | expected: {expected_le:#08x}"
+        );
     }
 
     #[test]
     fn test_mem() {
-        let str_inst = Instruction::Mem(
+        let str_inst_str = "str r0, [sp, 8]";
+        let str_inst_expected = Instruction::Mem(
             Cond::AL,
             MemoryMnemonic::STR,
             IndexMode::Offset,
-            Register(0),
-            Register(1),
-            Offset::Immediate(0, UpDown::Up),
+            Register::R(13),
+            Register::R(0),
+            Offset::Immediate(8, UpDown::Up),
         );
-        let machine_code = str_inst.to_machine_code();
-        let actual = machine_code.swap_bytes();
-        let expected = 0x1080E5;
+
+        // TODO: handle parsing mem instructions
         assert_eq!(
-            actual, expected,
-            "actual: {actual:#8X} | expected: {expected:#8X}"
+            Instruction::try_from(str_inst_str).unwrap(),
+            str_inst_expected,
+        );
+
+        let encoding = str_inst_expected.to_machine_code();
+        let expected = 0x08_00_8d_e5;
+        assert_eq!(
+            encoding, expected,
+            "actual: {encoding:#8X} | expected: {expected:#8X}"
         );
     }
 }
