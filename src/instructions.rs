@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::{
     cond::Cond,
     error::{MyErr, ParseError},
@@ -30,72 +28,37 @@ pub enum Register {
     N(u8),
 }
 
-impl Register {
-    pub fn get_id(&self) -> u8 {
-        match self {
-            Register::R(n) => *n,
-            Register::D(n) => *n,
-            Register::S(n) => *n,
-            Register::N(n) => *n,
-        }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Rd(pub u8);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Rn(pub u8);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Rs(pub u8);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Rm(pub u8);
+
+fn parse_reg_id(value: &str) -> Result<u8, MyErr> {
+    if value.is_empty() {
+        panic!("empty string");
     }
 
-    pub fn new_dest_reg(value: &str) -> Result<Self, MyErr> {
-        Ok(Register::D(Self::parse_reg_id(value)?))
+    if value.contains("sp") {
+        return Ok(13);
+    } else if value.contains("pc") {
+        return Ok(15);
     }
 
-    pub fn new_src_reg(value: &str) -> Result<Self, MyErr> {
-        Ok(Register::S(Self::parse_reg_id(value)?))
+    if !["r", "R"].contains(&(&value[0..1])) {
+        return Err(ParseError::BadRegister(value.to_owned()).into());
     }
 
-    fn parse_reg_id(value: &str) -> Result<u8, MyErr> {
-        if value.is_empty() {
-            panic!("empty string");
-        }
-
-        if value == "sp" {
-            return Ok(13);
-        } else if value == "pc" {
-            return Ok(15);
-        }
-
-        if let Ok(register_id) = &value[1..].parse::<u8>() {
-            Ok(*register_id)
-        } else {
-            Err(ParseError::BadRegister(value.to_owned()).into())
-        }
-    }
-}
-
-impl TryFrom<&str> for Register {
-    type Error = MyErr;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        if value.is_empty() {
-            panic!("empty string");
-        }
-
-        if value == "sp" {
-            return Ok(Register::R(13));
-        } else if value == "pc" {
-            return Ok(Register::R(15));
-        }
-
-        let access_type = &value[0..1];
-        let Ok(register_id) = &value[1..].parse::<u8>() else {
-            return Err(ParseError::BadRegister(value.to_owned()).into());
-        };
-
-        if *register_id > 31 {
-            panic!("bad reg id {register_id}");
-        }
-
-        match access_type {
-            "r" | "R" => Ok(Self::R(*register_id)),
-            //     "x" | "X" => Ok(Self::X(*register_id)),
-            //     "w" | "W" => Ok(Self::W(*register_id)),
-            _ => Err(ParseError::BadRegister(value.to_owned()).into()),
-        }
+    if let Ok(register_id) = &value[1..].parse::<u8>() {
+        Ok(*register_id)
+    } else {
+        Err(ParseError::BadRegister(value.to_owned()).into())
     }
 }
 
@@ -109,7 +72,7 @@ pub struct Shift(u8);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FlexibleOperand {
-    RegisterWithShift(Register, Shift),
+    RegisterWithShift(u8, Shift),
     ImmediateWithRotation(u8, Rotation),
 }
 
@@ -117,11 +80,11 @@ impl TryFrom<&str> for FlexibleOperand {
     type Error = MyErr;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        if let Ok(reg) = Register::try_from(value) {
-            return Ok(FlexibleOperand::RegisterWithShift(reg, Shift(0)));
+        if let Ok(reg_id) = parse_reg_id(value) {
+            return Ok(FlexibleOperand::RegisterWithShift(reg_id, Shift(0)));
         } else {
             Ok(FlexibleOperand::ImmediateWithRotation(
-                value.parse::<u8>().unwrap(),
+                value.parse::<u8>()?,
                 Rotation(0),
             ))
         }
@@ -136,7 +99,7 @@ pub enum SetConditionCodes {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Offset {
-    RegisterWithShift(Register, Shift, UpDown),
+    RegisterWithShift(u8, Shift, UpDown),
     // TODO: u12
     Immediate(u16, UpDown),
 }
@@ -161,50 +124,49 @@ pub enum Instruction {
         Cond,
         DataMnemonic,
         SetConditionCodes,
-        Register,
-        Register,
+        Rd,
+        Rn,
         FlexibleOperand,
     ),
-    Mem(Cond, MemoryMnemonic, IndexMode, Register, Register, Offset),
+    Mem(Cond, MemoryMnemonic, IndexMode, Rn, Rd, Offset),
     Branch(Cond, Operand, u64),
-    Mul(
-        Cond,
-        MultiplyMnemonic,
-        SetConditionCodes,
-        Register,
-        Register,
-        Register,
-    ),
+    Mul(Cond, MultiplyMnemonic, SetConditionCodes, Rd, Rn, Rm, Rs),
 }
 
 impl TryFrom<&str> for Instruction {
     type Error = MyErr;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        let (opcode_cond, rest) = value.trim().split_once(' ').unwrap();
+        let (opcode_cond, rest) = value
+            .trim()
+            .split_once(' ')
+            .ok_or(ParseError::RanOutOfOperands)?;
         let mut operands = rest.split(",");
         let mnemonic = Mnemonic::try_from(opcode_cond)?;
         let cond_maybe = opcode_cond.replace(&mnemonic.to_string(), "");
         let cond = if cond_maybe.is_empty() {
             Cond::AL
         } else {
-            Cond::try_from(cond_maybe.as_str()).unwrap()
+            Cond::try_from(cond_maybe.as_str())?
+        };
+
+        let mut get_reg_id = || -> Result<u8, Self::Error> {
+            parse_reg_id(operands.next().ok_or(ParseError::RanOutOfOperands)?.trim())
         };
 
         match mnemonic {
             Mnemonic::Data(data_mnemonic) => {
-                // There will always be a destination register
-                let rd = Register::try_from(operands.next().unwrap().trim()).unwrap();
+                let rd = Rd(get_reg_id()?);
 
                 let (rn, flex_op) = if data_mnemonic == DataMnemonic::MOV {
                     (
-                        Register::R(0),
-                        FlexibleOperand::try_from(operands.next().unwrap().trim()).unwrap(),
+                        Rn(0),
+                        FlexibleOperand::try_from(operands.next().unwrap().trim())?,
                     )
                 } else {
                     (
-                        Register::try_from(operands.next().unwrap().trim()).unwrap(),
-                        FlexibleOperand::try_from(operands.next().unwrap().trim()).unwrap(),
+                        Rn(get_reg_id()?),
+                        FlexibleOperand::try_from(operands.next().unwrap().trim())?,
                     )
                 };
 
@@ -212,16 +174,14 @@ impl TryFrom<&str> for Instruction {
                     cond,
                     data_mnemonic,
                     SetConditionCodes::DontSetCodes,
-                    rn,
                     rd,
+                    rn,
                     flex_op,
                 ))
             }
             Mnemonic::Mem(mem_mnemonic) => {
-                // There will always be a destination register
-                let rd = Register::try_from(operands.next().unwrap().trim()).unwrap();
-                // TODO: can this be anything but the stack pointer?
-                let rn = Register::R(13);
+                let rd = Rd(get_reg_id()?);
+                let rn = Rn(get_reg_id()?);
 
                 let mut offset = 0;
                 while let Some(maybe_offset) = operands.next() {
@@ -242,15 +202,28 @@ impl TryFrom<&str> for Instruction {
                 ))
             }
             Mnemonic::Mul(mul_mnemonic) => {
-                let rd = Register::try_from(operands.next().unwrap().trim()).unwrap();
-                let rn = Register::try_from(operands.next().unwrap().trim()).unwrap();
-                let rs = Register::try_from(operands.next().unwrap().trim()).unwrap();
+                let rd = Rd(get_reg_id()?);
+                let reg_2_id = get_reg_id()?;
+                let reg_3_id = get_reg_id()?;
+                let (rn, rm, rs) = if let Ok(reg_4_id) = get_reg_id() {
+                    let rn = Rn(reg_2_id);
+                    let rm = Rm(reg_3_id);
+                    let rs = Rs(reg_4_id);
+                    (rn, rm, rs)
+                } else {
+                    let rn = Rn(0);
+                    let rm = Rm(reg_2_id);
+                    let rs = Rs(reg_3_id);
+                    (rn, rm, rs)
+                };
+
                 Ok(Self::Mul(
                     cond,
                     mul_mnemonic,
                     SetConditionCodes::DontSetCodes,
-                    rn,
                     rd,
+                    rn,
+                    rm,
                     rs,
                 ))
             }
@@ -260,8 +233,8 @@ impl TryFrom<&str> for Instruction {
 
 impl Instruction {
     pub fn to_machine_code(self) -> u32 {
-        match self {
-            Instruction::DataProcessing(cond, opcode, set_condition_codes, rn, rd, op2) => {
+        let encoding = match self {
+            Instruction::DataProcessing(cond, opcode, set_condition_codes, rd, rn, op2) => {
                 let mut encoding: u32 = 0x0;
 
                 let cond_mask: u32 = (cond as u8 as u32) << 28;
@@ -282,15 +255,15 @@ impl Instruction {
                 };
                 encoding |= s_mask;
 
-                let rn_mask: u32 = (rn.get_id() as u32) << 16;
+                let rn_mask: u32 = (rn.0 as u32) << 16;
                 encoding |= rn_mask;
 
-                let rd_mask: u32 = (rd.get_id() as u32) << 12;
+                let rd_mask: u32 = (rd.0 as u32) << 12;
                 encoding |= rd_mask;
 
                 let op2_mask: u32 = match op2 {
                     FlexibleOperand::RegisterWithShift(reg, shift) => {
-                        ((shift.0 as u32) << 4) | (reg.get_id() as u32)
+                        ((shift.0 as u32) << 4) | (reg as u32)
                     }
                     FlexibleOperand::ImmediateWithRotation(imm, rotation) => {
                         ((rotation.0 as u32) << 8) | (imm as u32)
@@ -298,7 +271,7 @@ impl Instruction {
                 };
                 encoding |= op2_mask;
 
-                encoding.swap_bytes()
+                encoding
             }
             Instruction::Mem(cond, opcode, index_mode, rn, rd, offset) => {
                 let mut encoding: u32 = 0;
@@ -350,25 +323,24 @@ impl Instruction {
                 };
                 encoding |= l_mask;
 
-                let rn_mask: u32 = (rn.get_id() as u32) << 16;
+                let rn_mask: u32 = (rn.0 as u32) << 16;
                 encoding |= rn_mask;
 
-                let rd_mask: u32 = (rd.get_id() as u32) << 12;
+                let rd_mask: u32 = (rd.0 as u32) << 12;
                 encoding |= rd_mask;
 
                 let offset_mask: u32 = match offset {
                     Offset::RegisterWithShift(reg, shift, _) => {
-                        ((shift.0 as u32) << 4) | (reg.get_id() as u32)
+                        ((shift.0 as u32) << 4) | (reg as u32)
                     }
-                    // Truncate immediate value to 12 bits since rust doesn't want you to have
-                    // bizarre numeric types like u12 floating around.
+                    // Truncate immediate value to 12 bits
                     Offset::Immediate(imm, _) => (imm & 0x0FFF).into(),
                 };
                 encoding |= offset_mask;
 
-                encoding.swap_bytes()
+                encoding
             }
-            Instruction::Mul(cond, mul_mnemonic, set_condition_codes, _, _, _) => {
+            Instruction::Mul(cond, mul_mnemonic, set_condition_codes, rd, rn, rs, rm) => {
                 let mut encoding: u32 = 0;
 
                 let cond_mask: u32 = (cond as u8 as u32) << 28;
@@ -385,19 +357,29 @@ impl Instruction {
                 };
                 encoding |= s_mask;
 
-                // let rd_mask: u32 = (rd.get_id() as u32) << 16;
-                // encoding |= rd_mask;
+                let rd_mask: u32 = (rd.0 as u32) << 16;
+                encoding |= rd_mask;
 
-                // let rn_mask: u32 = (rn.get_id() as u32) << 12;
-                // encoding |= rn_mask;
+                let rn_mask: u32 = (rn.0 as u32) << 12;
+                encoding |= rn_mask;
 
-                // let rs_mask: u32 = (rs.get_id() as u32) << 8;
-                // encoding |= rs_mask;
+                let rm_mask: u32 = (rm.0 as u32) << 8;
+                encoding |= rm_mask;
 
-                encoding.swap_bytes()
+                let magic_bits: u32 = (0b1001 as u32) << 4;
+                encoding |= magic_bits;
+
+                // NOTE: this differs from the ARM encoding docs I've seen, but conforms to what
+                // I've been getting from ARM->Machine code tools online
+                let rs_mask: u32 = rs.0 as u32;
+                encoding |= rs_mask;
+
+                encoding
             }
             Instruction::Branch(..) => todo!(),
-        }
+        };
+
+        encoding.swap_bytes()
     }
 }
 
@@ -405,11 +387,11 @@ impl Instruction {
 pub mod tests {
     use crate::{
         cond::Cond,
-        instructions::{Offset, Rotation, UpDown},
-        mnemonics::{DataMnemonic, MemoryMnemonic},
+        instructions::{Offset, Rd, Rn, Rotation, UpDown},
+        mnemonics::{DataMnemonic, MemoryMnemonic, MultiplyMnemonic},
     };
 
-    use super::{FlexibleOperand, IndexMode, Instruction, Register, SetConditionCodes, Shift};
+    use super::{FlexibleOperand, IndexMode, Instruction, Rm, Rs, SetConditionCodes, Shift};
 
     #[test]
     fn test_add() {
@@ -418,9 +400,9 @@ pub mod tests {
             Cond::AL,
             DataMnemonic::ADD,
             SetConditionCodes::DontSetCodes,
-            Register::R(3),
-            Register::R(4),
-            FlexibleOperand::RegisterWithShift(Register::R(5), Shift(0)),
+            Rd(4),
+            Rn(3),
+            FlexibleOperand::RegisterWithShift(5, Shift(0)),
         );
 
         assert_eq!(
@@ -444,9 +426,9 @@ pub mod tests {
             Cond::AL,
             DataMnemonic::SUB,
             SetConditionCodes::DontSetCodes,
-            Register::R(0),
-            Register::R(1),
-            FlexibleOperand::RegisterWithShift(Register::R(2), Shift(0)),
+            Rd(1),
+            Rn(0),
+            FlexibleOperand::RegisterWithShift(2, Shift(0)),
         );
 
         assert_eq!(
@@ -471,8 +453,8 @@ pub mod tests {
             Cond::AL,
             DataMnemonic::MOV,
             SetConditionCodes::DontSetCodes,
-            Register::R(0),
-            Register::R(0),
+            Rd(0),
+            Rn(0),
             FlexibleOperand::ImmediateWithRotation(1, Rotation(0)),
         );
 
@@ -497,12 +479,11 @@ pub mod tests {
             Cond::AL,
             MemoryMnemonic::STR,
             IndexMode::Offset,
-            Register::R(13),
-            Register::R(0),
+            Rn(13),
+            Rd(0),
             Offset::Immediate(8, UpDown::Up),
         );
 
-        // TODO: handle parsing mem instructions
         assert_eq!(
             Instruction::try_from(str_inst_str).unwrap(),
             str_inst_expected,
@@ -517,5 +498,28 @@ pub mod tests {
     }
 
     #[test]
-    fn test_mul() {}
+    fn test_mul() {
+        let mul_inst_str = "mul r0, r1, r2";
+        let mul_inst_expected = Instruction::Mul(
+            Cond::AL,
+            MultiplyMnemonic::MUL,
+            SetConditionCodes::DontSetCodes,
+            Rd(0),
+            Rn(0),
+            Rm(1),
+            Rs(2),
+        );
+
+        assert_eq!(
+            Instruction::try_from(mul_inst_str).unwrap(),
+            mul_inst_expected,
+        );
+
+        let encoding = mul_inst_expected.to_machine_code();
+        let expected = 0x91_02_00_e0;
+        assert_eq!(
+            encoding, expected,
+            "actual: {encoding:#8X} | expected: {expected:#8X}"
+        );
+    }
 }
