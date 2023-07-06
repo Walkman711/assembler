@@ -18,7 +18,6 @@ pub enum Cond {
     NV,
 }
 
-// TODO: repr as u4?
 impl From<Cond> for u8 {
     fn from(value: Cond) -> Self {
         match value {

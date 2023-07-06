@@ -1,7 +1,7 @@
 use crate::{
     cond::Cond,
     error::{MyErr, ParseError},
-    mnemonics::{DataMnemonic, MemoryMnemonic, Mnemonic, MultiplyMnemonic},
+    mnemonics::{BranchMnemonic, DataMnemonic, MemoryMnemonic, Mnemonic, MultiplyMnemonic},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -21,14 +21,6 @@ pub enum Operand {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Register {
-    R(u8),
-    D(u8),
-    S(u8),
-    N(u8),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Rd(pub u8);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,8 +37,14 @@ fn parse_reg_id(value: &str) -> Result<u8, MyErr> {
         panic!("empty string");
     }
 
-    if value.contains("sp") {
+    if value.contains("fp") {
+        return Ok(11);
+    } else if value.contains("ip") {
+        return Ok(12);
+    } else if value.contains("sp") {
         return Ok(13);
+    } else if value.contains("lr") {
+        return Ok(14);
     } else if value.contains("pc") {
         return Ok(15);
     }
@@ -82,11 +80,13 @@ impl TryFrom<&str> for FlexibleOperand {
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         if let Ok(reg_id) = parse_reg_id(value) {
             return Ok(FlexibleOperand::RegisterWithShift(reg_id, Shift(0)));
-        } else {
+        } else if value.contains('#') {
             Ok(FlexibleOperand::ImmediateWithRotation(
-                value.parse::<u8>()?,
+                value.replace('#', "").parse::<u8>()?,
                 Rotation(0),
             ))
+        } else {
+            Err(MyErr::Parse(ParseError::BadFlexOperand(value.to_string())))
         }
     }
 }
@@ -129,7 +129,8 @@ pub enum Instruction {
         FlexibleOperand,
     ),
     Mem(Cond, MemoryMnemonic, IndexMode, Rn, Rd, Offset),
-    Branch(Cond, Operand, u64),
+    Branch(Cond, BranchMnemonic, u32),
+    BranchExec(Cond, Rn),
     Mul(Cond, MultiplyMnemonic, SetConditionCodes, Rd, Rn, Rm, Rs),
 }
 
@@ -137,6 +138,7 @@ impl TryFrom<&str> for Instruction {
     type Error = MyErr;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
+        dbg!(value);
         let (opcode_cond, rest) = value
             .trim()
             .split_once(' ')
@@ -150,23 +152,25 @@ impl TryFrom<&str> for Instruction {
             Cond::try_from(cond_maybe.as_str())?
         };
 
-        let mut get_reg_id = || -> Result<u8, Self::Error> {
-            parse_reg_id(operands.next().ok_or(ParseError::RanOutOfOperands)?.trim())
+        let mut get_next_op = || -> Result<&str, Self::Error> {
+            Ok(operands
+                .next()
+                .ok_or(MyErr::Parse(ParseError::RanOutOfOperands))?
+                .trim())
         };
+
+        let mut get_reg_id = || -> Result<u8, Self::Error> { parse_reg_id(get_next_op()?) };
 
         match mnemonic {
             Mnemonic::Data(data_mnemonic) => {
                 let rd = Rd(get_reg_id()?);
 
                 let (rn, flex_op) = if data_mnemonic == DataMnemonic::MOV {
-                    (
-                        Rn(0),
-                        FlexibleOperand::try_from(operands.next().unwrap().trim())?,
-                    )
+                    (Rn(0), FlexibleOperand::try_from(get_next_op()?)?)
                 } else {
                     (
                         Rn(get_reg_id()?),
-                        FlexibleOperand::try_from(operands.next().unwrap().trim())?,
+                        FlexibleOperand::try_from(get_next_op()?)?,
                     )
                 };
 
@@ -227,6 +231,14 @@ impl TryFrom<&str> for Instruction {
                     rs,
                 ))
             }
+            Mnemonic::Branch(b_mnemonic) => {
+                let offset = (get_next_op()?).parse::<u32>()?;
+                Ok(Self::Branch(cond, b_mnemonic, offset))
+            }
+            Mnemonic::BranchExec(_bx_mnemonic) => {
+                let rn = Rn(get_reg_id()?);
+                Ok(Self::BranchExec(cond, rn))
+            }
         }
     }
 }
@@ -235,33 +247,33 @@ impl Instruction {
     pub fn to_machine_code(self) -> u32 {
         let encoding = match self {
             Instruction::DataProcessing(cond, opcode, set_condition_codes, rd, rn, op2) => {
-                let mut encoding: u32 = 0x0;
+                let mut encoding: u32 = 0;
 
-                let cond_mask: u32 = (cond as u8 as u32) << 28;
+                let cond_mask = (cond as u8 as u32) << 28;
                 encoding |= cond_mask;
 
-                let i_mask: u32 = match op2 {
+                let i_mask = match op2 {
                     FlexibleOperand::RegisterWithShift(_, _) => 0,
                     FlexibleOperand::ImmediateWithRotation(_, _) => 1 << 25,
                 };
                 encoding |= i_mask;
 
-                let opcode_mask: u32 = (opcode as u8 as u32) << 21;
+                let opcode_mask = (opcode as u8 as u32) << 21;
                 encoding |= opcode_mask;
 
-                let s_mask: u32 = match set_condition_codes {
+                let s_mask = match set_condition_codes {
                     SetConditionCodes::SetCodes => 1 << 20,
                     SetConditionCodes::DontSetCodes => 0,
                 };
                 encoding |= s_mask;
 
-                let rn_mask: u32 = (rn.0 as u32) << 16;
+                let rn_mask = (rn.0 as u32) << 16;
                 encoding |= rn_mask;
 
-                let rd_mask: u32 = (rd.0 as u32) << 12;
+                let rd_mask = (rd.0 as u32) << 12;
                 encoding |= rd_mask;
 
-                let op2_mask: u32 = match op2 {
+                let op2_mask = match op2 {
                     FlexibleOperand::RegisterWithShift(reg, shift) => {
                         ((shift.0 as u32) << 4) | (reg as u32)
                     }
@@ -276,26 +288,26 @@ impl Instruction {
             Instruction::Mem(cond, opcode, index_mode, rn, rd, offset) => {
                 let mut encoding: u32 = 0;
 
-                let cond_mask: u32 = (cond as u8 as u32) << 28;
+                let cond_mask = (cond as u8 as u32) << 28;
                 encoding |= cond_mask;
 
                 // not sure what to call this?
-                let random_bit_mask: u32 = 1 << 26;
+                let random_bit_mask = 1 << 26;
                 encoding |= random_bit_mask;
 
-                let i_mask: u32 = match offset {
+                let i_mask = match offset {
                     Offset::RegisterWithShift(..) => 1 << 25,
                     Offset::Immediate(..) => 0,
                 };
                 encoding |= i_mask;
 
-                let p_mask: u32 = match index_mode {
+                let p_mask = match index_mode {
                     IndexMode::PostIndex => 0,
                     IndexMode::Offset | IndexMode::PreIndex => 1 << 24,
                 };
                 encoding |= p_mask;
 
-                let u_mask: u32 = match offset {
+                let u_mask = match offset {
                     Offset::RegisterWithShift(_, _, updown) | Offset::Immediate(_, updown) => {
                         match updown {
                             UpDown::Up => 1 << 23,
@@ -305,31 +317,31 @@ impl Instruction {
                 };
                 encoding |= u_mask;
 
-                let b_mask: u32 = match opcode {
+                let b_mask = match opcode {
                     MemoryMnemonic::STR | MemoryMnemonic::LDR => 0,
                     MemoryMnemonic::STRB | MemoryMnemonic::LDRB => 1 << 22,
                 };
                 encoding |= b_mask;
 
-                let w_mask: u32 = match index_mode {
+                let w_mask = match index_mode {
                     IndexMode::PostIndex | IndexMode::Offset => 0,
                     IndexMode::PreIndex => 1 << 21,
                 };
                 encoding |= w_mask;
 
-                let l_mask: u32 = match opcode {
+                let l_mask = match opcode {
                     MemoryMnemonic::STR | MemoryMnemonic::STRB => 0,
                     MemoryMnemonic::LDR | MemoryMnemonic::LDRB => 1 << 20,
                 };
                 encoding |= l_mask;
 
-                let rn_mask: u32 = (rn.0 as u32) << 16;
+                let rn_mask = (rn.0 as u32) << 16;
                 encoding |= rn_mask;
 
-                let rd_mask: u32 = (rd.0 as u32) << 12;
+                let rd_mask = (rd.0 as u32) << 12;
                 encoding |= rd_mask;
 
-                let offset_mask: u32 = match offset {
+                let offset_mask = match offset {
                     Offset::RegisterWithShift(reg, shift, _) => {
                         ((shift.0 as u32) << 4) | (reg as u32)
                     }
@@ -343,7 +355,7 @@ impl Instruction {
             Instruction::Mul(cond, mul_mnemonic, set_condition_codes, rd, rn, rs, rm) => {
                 let mut encoding: u32 = 0;
 
-                let cond_mask: u32 = (cond as u8 as u32) << 28;
+                let cond_mask = (cond as u8 as u32) << 28;
                 encoding |= cond_mask;
 
                 let a_mask = match mul_mnemonic {
@@ -357,26 +369,59 @@ impl Instruction {
                 };
                 encoding |= s_mask;
 
-                let rd_mask: u32 = (rd.0 as u32) << 16;
+                let rd_mask = (rd.0 as u32) << 16;
                 encoding |= rd_mask;
 
-                let rn_mask: u32 = (rn.0 as u32) << 12;
+                let rn_mask = (rn.0 as u32) << 12;
                 encoding |= rn_mask;
 
-                let rm_mask: u32 = (rm.0 as u32) << 8;
+                let rm_mask = (rm.0 as u32) << 8;
                 encoding |= rm_mask;
 
-                let magic_bits: u32 = (0b1001 as u32) << 4;
+                let magic_bits = (0b1001 as u32) << 4;
                 encoding |= magic_bits;
 
                 // NOTE: this differs from the ARM encoding docs I've seen, but conforms to what
                 // I've been getting from ARM->Machine code tools online
-                let rs_mask: u32 = rs.0 as u32;
+                let rs_mask = rs.0 as u32;
                 encoding |= rs_mask;
 
                 encoding
             }
-            Instruction::Branch(..) => todo!(),
+            Instruction::Branch(cond, b_mnemonic, offset) => {
+                let mut encoding: u32 = 0;
+
+                let cond_mask = (cond as u8 as u32) << 28;
+                encoding |= cond_mask;
+
+                let magic_bits = (0b101 as u32) << 25;
+                encoding |= magic_bits;
+
+                let link_mask = match b_mnemonic {
+                    BranchMnemonic::B => 0,
+                    BranchMnemonic::BL => 1 << 24,
+                };
+                encoding |= link_mask;
+
+                // Take lower 24 bits of offset
+                let offset_mask = offset & 0x00_FF_FF_FF;
+                encoding |= offset_mask;
+
+                encoding
+            }
+            Instruction::BranchExec(cond, rn) => {
+                let mut encoding: u32 = 0;
+
+                let cond_mask = (cond as u8 as u32) << 28;
+                encoding |= cond_mask;
+
+                let magic_bits = 0b0001_0010_1111_1111_1111_0001 << 4;
+                encoding |= magic_bits;
+
+                encoding |= rn.0 as u32;
+
+                encoding
+            }
         };
 
         encoding.swap_bytes()

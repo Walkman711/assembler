@@ -10,6 +10,8 @@ pub enum MyErr {
     ParseInt(#[from] ParseIntError),
     #[error("StrumError: {0}")]
     Strum(#[from] strum::ParseError),
+    #[error("IOError: {0}")]
+    IO(#[from] std::io::Error),
 }
 
 #[derive(Debug, Error)]
@@ -20,4 +22,6 @@ pub enum ParseError {
     BadRegister(String),
     #[error("Ran out of operands")]
     RanOutOfOperands,
+    #[error("Bad flex operand {0}")]
+    BadFlexOperand(String),
 }

@@ -7,6 +7,8 @@ pub enum Mnemonic {
     Data(DataMnemonic),
     Mem(MemoryMnemonic),
     Mul(MultiplyMnemonic),
+    Branch(BranchMnemonic),
+    BranchExec(BranchExecMnemonic),
 }
 
 impl TryFrom<&str> for Mnemonic {
@@ -19,6 +21,10 @@ impl TryFrom<&str> for Mnemonic {
             Ok(Mnemonic::Mem(mem_mnemonic))
         } else if let Ok(mul_mnemonic) = MultiplyMnemonic::try_from(value) {
             Ok(Mnemonic::Mul(mul_mnemonic))
+        } else if let Ok(bx_mnemonic) = BranchExecMnemonic::try_from(value) {
+            Ok(Mnemonic::BranchExec(bx_mnemonic))
+        } else if let Ok(b_mnemonic) = BranchMnemonic::try_from(value) {
+            Ok(Mnemonic::Branch(b_mnemonic))
         } else {
             Err(ParseError::BadMnemonic(value.to_owned()).into())
         }
@@ -31,6 +37,8 @@ impl std::fmt::Display for Mnemonic {
             Mnemonic::Data(data) => write!(f, "{data}"),
             Mnemonic::Mem(mem) => write!(f, "{mem}"),
             Mnemonic::Mul(mul) => write!(f, "{mul}"),
+            Mnemonic::Branch(b) => write!(f, "{b}"),
+            Mnemonic::BranchExec(bx) => write!(f, "{bx}"),
         }
     }
 }
@@ -190,6 +198,33 @@ impl TryFrom<&str> for BranchMnemonic {
             Ok(BranchMnemonic::BL)
         } else if value.starts_with(&b.to_uppercase()) || value.starts_with(&b.to_lowercase()) {
             Ok(BranchMnemonic::B)
+        } else {
+            Err(ParseError::BadMnemonic(value.to_owned()).into())
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BranchExecMnemonic {
+    BX,
+}
+
+impl std::fmt::Display for BranchExecMnemonic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BX => write!(f, "bx"),
+        }
+    }
+}
+
+impl TryFrom<&str> for BranchExecMnemonic {
+    type Error = MyErr;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let bx = Self::BX.to_string();
+
+        if value.starts_with(&bx.to_uppercase()) || value.starts_with(&bx.to_lowercase()) {
+            Ok(Self::BX)
         } else {
             Err(ParseError::BadMnemonic(value.to_owned()).into())
         }
