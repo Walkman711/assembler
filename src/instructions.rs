@@ -140,7 +140,6 @@ impl TryFrom<&str> for Instruction {
     type Error = AssemblerError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        dbg!(value);
         let (opcode_cond, rest) = value
             .trim()
             .split_once(' ')
