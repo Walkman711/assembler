@@ -1,6 +1,6 @@
 use strum::IntoEnumIterator;
 
-use crate::error::{MyErr, ParseError};
+use crate::error::{AssemblerError, ParseError};
 
 #[derive(Clone, Copy, Debug)]
 pub enum Mnemonic {
@@ -12,7 +12,7 @@ pub enum Mnemonic {
 }
 
 impl TryFrom<&str> for Mnemonic {
-    type Error = MyErr;
+    type Error = AssemblerError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         if let Ok(data_mnemonic) = DataMnemonic::try_from(value) {
@@ -87,7 +87,7 @@ impl std::fmt::Display for DataMnemonic {
 }
 
 impl TryFrom<&str> for DataMnemonic {
-    type Error = MyErr;
+    type Error = AssemblerError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         for mnemonic in DataMnemonic::iter() {
@@ -146,7 +146,7 @@ impl std::fmt::Display for MemoryMnemonic {
 }
 
 impl TryFrom<&str> for MemoryMnemonic {
-    type Error = MyErr;
+    type Error = AssemblerError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         // TODO: there should be a better way of doing this that doesn't rely on the correct
@@ -188,7 +188,7 @@ impl std::fmt::Display for BranchMnemonic {
 }
 
 impl TryFrom<&str> for BranchMnemonic {
-    type Error = MyErr;
+    type Error = AssemblerError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let bl = BranchMnemonic::BL.to_string();
@@ -218,7 +218,7 @@ impl std::fmt::Display for BranchExecMnemonic {
 }
 
 impl TryFrom<&str> for BranchExecMnemonic {
-    type Error = MyErr;
+    type Error = AssemblerError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let bx = Self::BX.to_string();
@@ -245,7 +245,7 @@ impl std::fmt::Display for MultiplyMnemonic {
 }
 
 impl TryFrom<&str> for MultiplyMnemonic {
-    type Error = MyErr;
+    type Error = AssemblerError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let mul = MultiplyMnemonic::MUL.to_string();

@@ -1,6 +1,4 @@
-use assembler::error::MyErr;
-use assembler::instructions::Instruction;
-use assembler::mnemonics::BranchMnemonic;
+use assembler::{error::AssemblerError, instructions::Instruction, mnemonics::BranchMnemonic};
 use clap::Parser;
 use std::{
     collections::HashMap,
@@ -16,7 +14,7 @@ struct Args {
 
 const INST_SIZE: u32 = 0x20;
 
-fn main() -> Result<(), MyErr> {
+fn main() -> Result<(), AssemblerError> {
     let args = Args::parse();
     let file = File::open(args.file)?;
 

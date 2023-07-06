@@ -3,7 +3,7 @@ use std::num::ParseIntError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum MyErr {
+pub enum AssemblerError {
     #[error("Parse Error: {0}")]
     Parse(#[from] ParseError),
     #[error("ParseIntError: {0}")]

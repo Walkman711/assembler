@@ -1,6 +1,6 @@
 use crate::{
     cond::Cond,
-    error::{MyErr, ParseError},
+    error::{AssemblerError, ParseError},
     mnemonics::{BranchMnemonic, DataMnemonic, MemoryMnemonic, Mnemonic, MultiplyMnemonic},
 };
 
@@ -32,7 +32,7 @@ pub struct Rs(pub u8);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Rm(pub u8);
 
-fn parse_reg_id(value: &str) -> Result<u8, MyErr> {
+fn parse_reg_id(value: &str) -> Result<u8, AssemblerError> {
     if value.is_empty() {
         panic!("empty string");
     }
@@ -75,7 +75,7 @@ pub enum FlexibleOperand {
 }
 
 impl TryFrom<&str> for FlexibleOperand {
-    type Error = MyErr;
+    type Error = AssemblerError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         if let Ok(reg_id) = parse_reg_id(value) {
@@ -86,7 +86,9 @@ impl TryFrom<&str> for FlexibleOperand {
                 Rotation(0),
             ))
         } else {
-            Err(MyErr::Parse(ParseError::BadFlexOperand(value.to_string())))
+            Err(AssemblerError::Parse(ParseError::BadFlexOperand(
+                value.to_string(),
+            )))
         }
     }
 }
@@ -131,11 +133,11 @@ pub enum Instruction {
     Mem(Cond, MemoryMnemonic, IndexMode, Rn, Rd, Offset),
     Branch(Cond, BranchMnemonic, u32),
     BranchExec(Cond, Rn),
-    Mul(Cond, MultiplyMnemonic, SetConditionCodes, Rd, Rn, Rm, Rs),
+    Mul(Cond, MultiplyMnemonic, SetConditionCodes, Rd, Rn, Rs, Rm),
 }
 
 impl TryFrom<&str> for Instruction {
-    type Error = MyErr;
+    type Error = AssemblerError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         dbg!(value);
@@ -155,7 +157,7 @@ impl TryFrom<&str> for Instruction {
         let mut get_next_op = || -> Result<&str, Self::Error> {
             Ok(operands
                 .next()
-                .ok_or(MyErr::Parse(ParseError::RanOutOfOperands))?
+                .ok_or(AssemblerError::Parse(ParseError::RanOutOfOperands))?
                 .trim())
         };
 
@@ -227,8 +229,8 @@ impl TryFrom<&str> for Instruction {
                     SetConditionCodes::DontSetCodes,
                     rd,
                     rn,
-                    rm,
                     rs,
+                    rm,
                 ))
             }
             Mnemonic::Branch(b_mnemonic) => {
@@ -246,185 +248,221 @@ impl TryFrom<&str> for Instruction {
 impl Instruction {
     pub fn to_machine_code(self) -> u32 {
         let encoding = match self {
-            Instruction::DataProcessing(cond, opcode, set_condition_codes, rd, rn, op2) => {
-                let mut encoding: u32 = 0;
-
-                let cond_mask = (cond as u8 as u32) << 28;
-                encoding |= cond_mask;
-
-                let i_mask = match op2 {
-                    FlexibleOperand::RegisterWithShift(_, _) => 0,
-                    FlexibleOperand::ImmediateWithRotation(_, _) => 1 << 25,
-                };
-                encoding |= i_mask;
-
-                let opcode_mask = (opcode as u8 as u32) << 21;
-                encoding |= opcode_mask;
-
-                let s_mask = match set_condition_codes {
-                    SetConditionCodes::SetCodes => 1 << 20,
-                    SetConditionCodes::DontSetCodes => 0,
-                };
-                encoding |= s_mask;
-
-                let rn_mask = (rn.0 as u32) << 16;
-                encoding |= rn_mask;
-
-                let rd_mask = (rd.0 as u32) << 12;
-                encoding |= rd_mask;
-
-                let op2_mask = match op2 {
-                    FlexibleOperand::RegisterWithShift(reg, shift) => {
-                        ((shift.0 as u32) << 4) | (reg as u32)
-                    }
-                    FlexibleOperand::ImmediateWithRotation(imm, rotation) => {
-                        ((rotation.0 as u32) << 8) | (imm as u32)
-                    }
-                };
-                encoding |= op2_mask;
-
-                encoding
+            Instruction::DataProcessing(cond, dp_mnemonic, set_condition_codes, rd, rn, op2) => {
+                Self::encode_dp_inst(cond, dp_mnemonic, set_condition_codes, rd, rn, op2)
             }
             Instruction::Mem(cond, opcode, index_mode, rn, rd, offset) => {
-                let mut encoding: u32 = 0;
-
-                let cond_mask = (cond as u8 as u32) << 28;
-                encoding |= cond_mask;
-
-                // not sure what to call this?
-                let random_bit_mask = 1 << 26;
-                encoding |= random_bit_mask;
-
-                let i_mask = match offset {
-                    Offset::RegisterWithShift(..) => 1 << 25,
-                    Offset::Immediate(..) => 0,
-                };
-                encoding |= i_mask;
-
-                let p_mask = match index_mode {
-                    IndexMode::PostIndex => 0,
-                    IndexMode::Offset | IndexMode::PreIndex => 1 << 24,
-                };
-                encoding |= p_mask;
-
-                let u_mask = match offset {
-                    Offset::RegisterWithShift(_, _, updown) | Offset::Immediate(_, updown) => {
-                        match updown {
-                            UpDown::Up => 1 << 23,
-                            UpDown::Down => 0,
-                        }
-                    }
-                };
-                encoding |= u_mask;
-
-                let b_mask = match opcode {
-                    MemoryMnemonic::STR | MemoryMnemonic::LDR => 0,
-                    MemoryMnemonic::STRB | MemoryMnemonic::LDRB => 1 << 22,
-                };
-                encoding |= b_mask;
-
-                let w_mask = match index_mode {
-                    IndexMode::PostIndex | IndexMode::Offset => 0,
-                    IndexMode::PreIndex => 1 << 21,
-                };
-                encoding |= w_mask;
-
-                let l_mask = match opcode {
-                    MemoryMnemonic::STR | MemoryMnemonic::STRB => 0,
-                    MemoryMnemonic::LDR | MemoryMnemonic::LDRB => 1 << 20,
-                };
-                encoding |= l_mask;
-
-                let rn_mask = (rn.0 as u32) << 16;
-                encoding |= rn_mask;
-
-                let rd_mask = (rd.0 as u32) << 12;
-                encoding |= rd_mask;
-
-                let offset_mask = match offset {
-                    Offset::RegisterWithShift(reg, shift, _) => {
-                        ((shift.0 as u32) << 4) | (reg as u32)
-                    }
-                    // Truncate immediate value to 12 bits
-                    Offset::Immediate(imm, _) => (imm & 0x0FFF).into(),
-                };
-                encoding |= offset_mask;
-
-                encoding
+                Self::encode_mem_inst(cond, opcode, index_mode, rn, rd, offset)
             }
             Instruction::Mul(cond, mul_mnemonic, set_condition_codes, rd, rn, rs, rm) => {
-                let mut encoding: u32 = 0;
-
-                let cond_mask = (cond as u8 as u32) << 28;
-                encoding |= cond_mask;
-
-                let a_mask = match mul_mnemonic {
-                    MultiplyMnemonic::MUL => 0,
-                };
-                encoding |= a_mask;
-
-                let s_mask = match set_condition_codes {
-                    SetConditionCodes::SetCodes => 1 << 20,
-                    SetConditionCodes::DontSetCodes => 0,
-                };
-                encoding |= s_mask;
-
-                let rd_mask = (rd.0 as u32) << 16;
-                encoding |= rd_mask;
-
-                let rn_mask = (rn.0 as u32) << 12;
-                encoding |= rn_mask;
-
-                let rm_mask = (rm.0 as u32) << 8;
-                encoding |= rm_mask;
-
-                let magic_bits = (0b1001 as u32) << 4;
-                encoding |= magic_bits;
-
-                // NOTE: this differs from the ARM encoding docs I've seen, but conforms to what
-                // I've been getting from ARM->Machine code tools online
-                let rs_mask = rs.0 as u32;
-                encoding |= rs_mask;
-
-                encoding
+                Self::encode_mul_inst(cond, mul_mnemonic, set_condition_codes, rd, rn, rs, rm)
             }
             Instruction::Branch(cond, b_mnemonic, offset) => {
-                let mut encoding: u32 = 0;
-
-                let cond_mask = (cond as u8 as u32) << 28;
-                encoding |= cond_mask;
-
-                let magic_bits = (0b101 as u32) << 25;
-                encoding |= magic_bits;
-
-                let link_mask = match b_mnemonic {
-                    BranchMnemonic::B => 0,
-                    BranchMnemonic::BL => 1 << 24,
-                };
-                encoding |= link_mask;
-
-                // Take lower 24 bits of offset
-                let offset_mask = offset & 0x00_FF_FF_FF;
-                encoding |= offset_mask;
-
-                encoding
+                Self::encode_branch_inst(cond, b_mnemonic, offset)
             }
-            Instruction::BranchExec(cond, rn) => {
-                let mut encoding: u32 = 0;
-
-                let cond_mask = (cond as u8 as u32) << 28;
-                encoding |= cond_mask;
-
-                let magic_bits = 0b0001_0010_1111_1111_1111_0001 << 4;
-                encoding |= magic_bits;
-
-                encoding |= rn.0 as u32;
-
-                encoding
-            }
+            Instruction::BranchExec(cond, rn) => Self::encode_branch_exec_inst(cond, rn),
         };
 
         encoding.swap_bytes()
+    }
+
+    fn encode_dp_inst(
+        cond: Cond,
+        dp_mnemonic: DataMnemonic,
+        set_condition_codes: SetConditionCodes,
+        rd: Rd,
+        rn: Rn,
+        op2: FlexibleOperand,
+    ) -> u32 {
+        let mut encoding: u32 = 0;
+
+        let cond_mask = (cond as u8 as u32) << 28;
+        encoding |= cond_mask;
+
+        let i_mask = match op2 {
+            FlexibleOperand::RegisterWithShift(_, _) => 0,
+            FlexibleOperand::ImmediateWithRotation(_, _) => 1 << 25,
+        };
+        encoding |= i_mask;
+
+        let dp_mnemonic_mask = (dp_mnemonic as u8 as u32) << 21;
+        encoding |= dp_mnemonic_mask;
+
+        let s_mask = match set_condition_codes {
+            SetConditionCodes::SetCodes => 1 << 20,
+            SetConditionCodes::DontSetCodes => 0,
+        };
+        encoding |= s_mask;
+
+        let rn_mask = (rn.0 as u32) << 16;
+        encoding |= rn_mask;
+
+        let rd_mask = (rd.0 as u32) << 12;
+        encoding |= rd_mask;
+
+        let op2_mask = match op2 {
+            FlexibleOperand::RegisterWithShift(reg, shift) => {
+                ((shift.0 as u32) << 4) | (reg as u32)
+            }
+            FlexibleOperand::ImmediateWithRotation(imm, rotation) => {
+                ((rotation.0 as u32) << 8) | (imm as u32)
+            }
+        };
+        encoding |= op2_mask;
+
+        encoding
+    }
+
+    fn encode_mem_inst(
+        cond: Cond,
+        mem_mnemonic: MemoryMnemonic,
+        index_mode: IndexMode,
+        rn: Rn,
+        rd: Rd,
+        offset: Offset,
+    ) -> u32 {
+        let mut encoding: u32 = 0;
+
+        let cond_mask = (cond as u8 as u32) << 28;
+        encoding |= cond_mask;
+
+        // not sure what to call this?
+        let random_bit_mask = 1 << 26;
+        encoding |= random_bit_mask;
+
+        let i_mask = match offset {
+            Offset::RegisterWithShift(..) => 1 << 25,
+            Offset::Immediate(..) => 0,
+        };
+        encoding |= i_mask;
+
+        let p_mask = match index_mode {
+            IndexMode::PostIndex => 0,
+            IndexMode::Offset | IndexMode::PreIndex => 1 << 24,
+        };
+        encoding |= p_mask;
+
+        let u_mask = match offset {
+            Offset::RegisterWithShift(_, _, updown) | Offset::Immediate(_, updown) => {
+                match updown {
+                    UpDown::Up => 1 << 23,
+                    UpDown::Down => 0,
+                }
+            }
+        };
+        encoding |= u_mask;
+
+        let b_mask = match mem_mnemonic {
+            MemoryMnemonic::STR | MemoryMnemonic::LDR => 0,
+            MemoryMnemonic::STRB | MemoryMnemonic::LDRB => 1 << 22,
+        };
+        encoding |= b_mask;
+
+        let w_mask = match index_mode {
+            IndexMode::PostIndex | IndexMode::Offset => 0,
+            IndexMode::PreIndex => 1 << 21,
+        };
+        encoding |= w_mask;
+
+        let l_mask = match mem_mnemonic {
+            MemoryMnemonic::STR | MemoryMnemonic::STRB => 0,
+            MemoryMnemonic::LDR | MemoryMnemonic::LDRB => 1 << 20,
+        };
+        encoding |= l_mask;
+
+        let rn_mask = (rn.0 as u32) << 16;
+        encoding |= rn_mask;
+
+        let rd_mask = (rd.0 as u32) << 12;
+        encoding |= rd_mask;
+
+        let offset_mask = match offset {
+            Offset::RegisterWithShift(reg, shift, _) => ((shift.0 as u32) << 4) | (reg as u32),
+            // Truncate immediate value to 12 bits
+            Offset::Immediate(imm, _) => (imm & 0x0FFF).into(),
+        };
+        encoding |= offset_mask;
+
+        encoding
+    }
+
+    fn encode_mul_inst(
+        cond: Cond,
+        mul_mnemonic: MultiplyMnemonic,
+        set_condition_codes: SetConditionCodes,
+        rd: Rd,
+        rn: Rn,
+        rs: Rs,
+        rm: Rm,
+    ) -> u32 {
+        let mut encoding: u32 = 0;
+
+        let cond_mask = (cond as u8 as u32) << 28;
+        encoding |= cond_mask;
+
+        let a_mask = match mul_mnemonic {
+            MultiplyMnemonic::MUL => 0,
+        };
+        encoding |= a_mask;
+
+        let s_mask = match set_condition_codes {
+            SetConditionCodes::SetCodes => 1 << 20,
+            SetConditionCodes::DontSetCodes => 0,
+        };
+        encoding |= s_mask;
+
+        let rd_mask = (rd.0 as u32) << 16;
+        encoding |= rd_mask;
+
+        let rn_mask = (rn.0 as u32) << 12;
+        encoding |= rn_mask;
+
+        let rs_mask = (rs.0 as u32) << 8;
+        encoding |= rs_mask;
+
+        let magic_bits = (0b1001 as u32) << 4;
+        encoding |= magic_bits;
+
+        let rm_mask = rm.0 as u32;
+        encoding |= rm_mask;
+
+        encoding
+    }
+
+    fn encode_branch_inst(cond: Cond, b_mnemonic: BranchMnemonic, offset: u32) -> u32 {
+        let mut encoding: u32 = 0;
+
+        let cond_mask = (cond as u8 as u32) << 28;
+        encoding |= cond_mask;
+
+        let magic_bits = (0b101 as u32) << 25;
+        encoding |= magic_bits;
+
+        let link_mask = match b_mnemonic {
+            BranchMnemonic::B => 0,
+            BranchMnemonic::BL => 1 << 24,
+        };
+        encoding |= link_mask;
+
+        // Take lower 24 bits of offset
+        let offset_mask = offset & 0x00_FF_FF_FF;
+        encoding |= offset_mask;
+
+        encoding
+    }
+
+    fn encode_branch_exec_inst(cond: Cond, rn: Rn) -> u32 {
+        let mut encoding: u32 = 0;
+
+        let cond_mask = (cond as u8 as u32) << 28;
+        encoding |= cond_mask;
+
+        let magic_bits = 0b0001_0010_1111_1111_1111_0001 << 4;
+        encoding |= magic_bits;
+
+        encoding |= rn.0 as u32;
+
+        encoding
     }
 }
 
@@ -493,7 +531,7 @@ pub mod tests {
 
     #[test]
     fn test_mov() {
-        let mov_inst_str = "mov r0, 1";
+        let mov_inst_str = "mov r0, #1";
         let mov_inst_expected = Instruction::DataProcessing(
             Cond::AL,
             DataMnemonic::MOV,
@@ -551,8 +589,8 @@ pub mod tests {
             SetConditionCodes::DontSetCodes,
             Rd(0),
             Rn(0),
-            Rm(1),
             Rs(2),
+            Rm(1),
         );
 
         assert_eq!(
